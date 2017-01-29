@@ -20,6 +20,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.nio.charset.Charset;
+import java.util.Hashtable;
+import java.util.function.BinaryOperator;
 
 
 /* TODO List :
@@ -66,10 +68,14 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
   private ArrayList<String> whyMLcode = new ArrayList<>();
   private ArrayList<functionNameArity> functionsDefined = new ArrayList<>();
   private ArrayList<functionNameArity> functionsCalled = new ArrayList<>();
+  private Hashtable<String,String> attributs = new Hashtable<>();
+  private Hashtable<String,String> methods = new Hashtable<>();
 
   /// If true, the verification has to consider integers with 32 bits
   private boolean int32;
   private String usedInt;
+  // ----- <GEOFFREY ajout type object ---->
+  private String object = "object";
 
   /// Indentation management
   private int spacing = 0;
@@ -86,12 +92,14 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
     this.sourcePath=sourcePath;
     this.charsPerLine=Arrays.copyOf(charsPerLine, charsPerLine.length);
     this.destFile=destFile;
-    this.int32=int32;
+    // -------- <GEOFFREY uniquement le type objet > ----//
+    /* this.int32=int32;
     if(int32) {
       usedInt="int32";
     } else {
       usedInt="int";
     }
+    */
   }
 
 
@@ -267,19 +275,95 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
         if(fnc.isSimilar(fnd))
           exists=true;
       }
-      if(!exists){
+      if(!exists) {
         System.out.println("Function doesn't exist: "+fnc.getName()+" at line "+fnc.getLine()+", column "+fnc.getColumn());
       }
     }
   }
 
+  //================= <GEOFFREY Module Hashtable> =================
+  private final String module_Hashtable = ""
+    +"module HashTable" +"\n"
+    +"\n"
+    +"    use import option.Option" +"\n"
+    +"    use import int.Int" +"\n"
+    +"    use import map.Map" +"\n"
+    +"\n"
+    +"    type t 'a 'b model { mutable contents: map 'a (option 'b) }" +"\n"
+    +"\n"
+    +"    function ([]) (h: t 'a 'b) (k: 'a) : option 'b = Map.get h.contents k" +"\n"
+    +"\n"
+    +"    val create (n:int) : t 'a 'b" +"\n"
+    +"    requires { 0 < n }" +"\n"
+    +"    ensures { forall k: 'a. result[k] = None }" +"\n"
+    +"\n"
+    +"    val clear (h: t 'a 'b) : unit writes {h}" +"\n"
+    +"    ensures { forall k: 'a. h[k] = None }" +"\n"
+    +"\n"
+    +"    val add (h: t 'a 'b) (k: 'a) (v: 'b) : unit writes {h}" +"\n"
+    +"    ensures { h[k] = Some v /\\ forall k': 'a. k' <> k -> h[k'] = (old h)[k'] }" +"\n"
+    +"\n"
+    +"    exception Not_found" +"\n"
+    +"    val find (h: t 'a 'b) (k: 'a) : 'b reads {h}" +"\n"
+    +"    ensures { h[k] = Some result }" +"\n"
+    +"    (* raises { Not_found -> h[k] = None } *)" +"\n"
+    +"\n"
+    +"    val copy (h: t 'a 'b) : t 'a 'b reads {h}" +"\n"
+    +"    ensures { forall k: 'a. result[k] = h[k] }" +"\n"
+    +"\n"
+    +"    val remove (h: t 'a 'b) (k: 'a) : unit writes {h}" +"\n"
+    +"    ensures { h[k] = None }" +"\n"
+    +"    ensures { forall k': 'a. k' <> k -> h[k'] = (old h)[k'] }" +"\n"
+    +"\n"
+    +"end"+"\n"+"\n";
+  //================= </GEOFFREY Module Hashtable> =================
 
+  //================= <GEOFFREY Conversion String Seq Int pour WhyMLcode> =================
+  public String toSeqInt(String mystring) {
+    int i;
+    int ascii;
+    char character;
+    String result="(";
+
+    if (mystring.length()==1) {
+      character = mystring.charAt(0);
+      ascii = (int)character;
+      result = result + "cons " + Integer.toString(ascii) + " empty";
+    }
+    else if (mystring.length()>1) {
+      character = mystring.charAt(0);
+      ascii = (int)character;
+      result = result + "cons " + Integer.toString(ascii);
+      for(i=1;i<mystring.length()-1;i++) {
+        character = mystring.charAt(i);
+        ascii = (int)character;
+        result = result + "(cons " + Integer.toString(ascii);
+      }
+      character = mystring.charAt(mystring.length()-1);
+      ascii = (int)character;
+      result = result + "(cons " + Integer.toString(ascii) + " empty";
+
+      for(i=1;i<=mystring.length()-1;i++) {
+        character = mystring.charAt(i);
+        ascii = (int)character;
+        result = result + ")";
+      }
+    }
+    else {result = "cons 0 empty";}
+    result= result + ")";
+    return result;
+  }
+  //================= </GEOFFREY Conversion String Seq Int pour WhyMLcode> =================
 
 
   //================= <Visitor methods> =================
   @Override
   public void visitModule(GoloModule module) {
     this.context = new Context();
+    //================= <GEOFFREY module HASHTABLE> =================
+    whyMLcode.add(module_Hashtable); //temporary import
+
+
     String moduleName = module.getPackageAndClass().toString().replaceAll("\\.", "");
     moduleName = moduleName.substring(0, 1).toUpperCase() + moduleName.substring(1);
     whyMLcode.add("module " + moduleName);
@@ -292,9 +376,20 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
     }
     whyMLcode.add(space() + "use import ref.Ref"); //temporary import
     // whyMLcode.add(space() + "use import mach.int.Int"); //temporary import Seems useless
-    whyMLcode.add(space() + "function "+usedInt+" : "+usedInt);
-    whyMLcode.add(space() + "constant null : "+usedInt); //temporary null type creation
+    //================= <GEOFFREY ENTETE POUR TYPE OBJET> =================
+    whyMLcode.add(space() + "use import seq.Seq");
+    whyMLcode.add(space() + "use HashTable as Hashtbl");
+
+    whyMLcode.add(space() + "type string = seq int");
+    //whyMLcode.add(space() + "type params = seq string");
+
+    whyMLcode.add(space() + "type object = { mutable attributs : Hashtbl.t string string ;");
+    whyMLcode.add(space() +space()+space()+ "mutable methods : Hashtbl.t string string }");
+    //================= <\GEOFFREY ENTETE POUR TYPE OBJET> =================
+    //whyMLcode.add(space() + "function "+object+" : "+object);
+    whyMLcode.add(space() + "constant null : "+object); //temporary null type creation
     whyMLcode.add(space() + "exception Return ()"); // temporary exception declaration
+
     module.walk(this);
     decr();
     whyMLcode.add(space() +"end");
@@ -333,7 +428,8 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
     }
     if (function.isSynthetic()) {
       System.out.println("synthetic unsupported");
-      appendWhyMLLastString(" (synthetic, " + function.getSyntheticParameterCount() + " synthetic parameters)");
+      // ----- <GEOFFREY ligne mis en commentaire pour define(methodName,CLOSUREREFERENCE)
+      //appendWhyMLLastString(" (synthetic, " + function.getSyntheticParameterCount() + " synthetic parameters)");
       if (function.getSyntheticSelfName() != null) {
         appendWhyMLLastString(" (selfname: " + function.getSyntheticSelfName() + ")");
       }
@@ -353,14 +449,14 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
         }
       }
       if(!isParam && !ref.isConstant()){
-        whyMLcode.add(space() + "let " + ref.getName() + " = ref "+usedInt+" in ");
+        whyMLcode.add(space() + "let " + ref.getName() + " = ref "+object+" in ");
       }
     }
-    whyMLcode.add(space() + "let return = ref "+usedInt+" in try");
+    whyMLcode.add(space() + "let return = ref "+object+" in try");
     incr();
     function.walk(this);
     decr();
-//    whyMLcode.add(space() + ";");
+    whyMLcode.add(space() + ";");
     whyMLcode.add(space() + "with Return -> !return end");
     decr();
   }
@@ -377,7 +473,7 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
     whyMLcode.add(space() + getSourceCodeBlocksLines(block));
     block.walk(this);
     decr();
-    whyMLcode.add(space() + ") end");
+    whyMLcode.add(space() + ") end" + "\n");
     restoreIfInBlock(ib);
     context.referenceTableStack.pop();
   }
@@ -389,6 +485,7 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
 
   @Override
   public void visitReturnStatement(ReturnStatement returnStatement) {
+    whyMLcode.add(space() + "");
     whyMLcode.add(space() + "(return := ");
     returnStatement.walk(this);
     appendWhyMLLastString(");");
@@ -404,32 +501,40 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
         + ", on module state? -> " + functionInvocation.isOnModuleState()
         + ", anonymous? -> " + functionInvocation.isAnonymous()
         + ", named arguments? -> " + functionInvocation.usesNamedArguments());*/
-    if (!functionInvocation.isOnReference() && !functionInvocation.isOnModuleState()) {
-      functionsCalled.add(new functionNameArity(functionInvocation.getName(),functionInvocation.getArity(), functionInvocation.getPositionInSourceCode()));
-      whyMLcode.add(space() + "("+functionInvocation.getName() + " ");
-    }
-    else {
+    //================= <GEOFFREY condition pour DynamicObject> =================
+    if (functionInvocation.getName().equals("DynamicObject")) {
+      //whyMLcode.remove(whyMLcode.size());
+      whyMLcode.add(space() + "{ attributs = Hashtbl.create 1 ; methods = Hashtbl.create 1 }");
+      //functionInvocation.walk(this);
+      //whyMLcode.add(space() + "newobject");
+    } else {
+      if (!functionInvocation.isOnReference() && !functionInvocation.isOnModuleState()) {
+        functionsCalled.add(new functionNameArity(functionInvocation.getName(), functionInvocation.getArity(), functionInvocation.getPositionInSourceCode()));
+        whyMLcode.add(space() + functionInvocation.getName() + " ");
+      } else {
       /* ReferenceTable table = context.referenceTableStack.peek();
       System.out.println(table.get(functionInvocation.getName()));
       System.out.println(table.hasReferenceFor(functionInvocation.getName()));*/
 
-      // Need to support closures before being able to implement this
-      System.out.println("Function call on reference or module state unsupported");
-      whyMLcode.add("Function call on reference or module state not implemented");
+        // Need to support closures before being able to implement this
+        System.out.println("Function call on reference or module state unsupported");
+        whyMLcode.add("Function call on reference or module state not implemented");
+      }
+      if (functionInvocation.getArity() == 0) {
+        appendWhyMLLastString("(");
+      }
+      functionInvocation.walk(this);
+
+      if (functionInvocation.getArity() == 0) {
+        appendWhyMLLastString(")");
+      }
+        //appendWhyMLLastString(") "); // The whole function is between parenthesis
+      restoreIfInBlock(ib);
     }
-    if (functionInvocation.getArity()==0) {
-      appendWhyMLLastString("(");
-    }
-    functionInvocation.walk(this);
-    if (functionInvocation.getArity()==0) {
-      appendWhyMLLastString(")");
-    }
-    appendWhyMLLastString(") "); // The whole function is between parenthesis
-    restoreIfInBlock(ib);
   }
 
 
-  @Override
+    @Override
   public void visitConditionalBranching(ConditionalBranching conditionalBranching) {
     boolean ib = maskIfInBlock();
     whyMLcode.add(space() + "if ");
@@ -460,13 +565,13 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
     String refName = assignmentStatement.getLocalReference().getName();
     // space(); System.out.println("(* Assignment: " + assignmentStatement.getLocalReference() + " *)");
     if (assignmentStatement.getLocalReference().isConstant()) {
-      whyMLcode.add(space() + "let " + refName + " = ");
+      whyMLcode.add(space() + "let " + refName + " : object = ");
       incr();
       boolean ib = maskIfInBlock();
       assignmentStatement.walk(this);
-      restoreIfInBlock(ib, false);
+      //restoreIfInBlock(ib, false);
+      appendWhyMLLastString(" in ");
       decr();
-      appendWhyMLLastString(" in");
     } else {
       boolean ib = maskIfInBlock();
       whyMLcode.add(space() + "( "  + refName + " := ");
@@ -484,10 +589,14 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
   public void visitReferenceLookup(ReferenceLookup referenceLookup) {
     LocalReference reference = referenceLookup.resolveIn(context.referenceTableStack.peek());
     // space(); System.out.println("(* Reference lookup, Constant? " + reference.isConstant() + " *)");
-    if (reference.isConstant()) {
-      appendWhyMLLastString(referenceLookup.getName()+" ");
-    } else {
-      appendWhyMLLastString("(!" + referenceLookup.getName() + ") ");
+    // <----- GEOFFREY Condition pour les appels de methodes ---->
+    // on regarde si on est pas dans le cas this:methodeinvocation() car sinon on écrit rien dans whyMLcode
+    if(!(referenceLookup.getParentNode().get() instanceof BinaryOperation)) {
+      if (reference.isConstant()) {
+        appendWhyMLLastString(referenceLookup.getName() + " ");
+      } else {
+        appendWhyMLLastString("(!" + referenceLookup.getName() + ") ");
+      }
     }
   }
 
@@ -498,7 +607,7 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
     if(constantStatement.getValue() instanceof Integer) {
       // In case of 32bits literal integer, we have to call the of_int function on the absolute value of the constant.
       int v = ((Integer) constantStatement.getValue()).intValue();
-      if(int32) {
+      if (int32) {
         if (v < 0) {
           appendWhyMLLastString("(  - ( of_int " + (-v) + " )) ");
         } else {
@@ -508,9 +617,15 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
         if (v < 0) {
           appendWhyMLLastString("(" + v + ") ");
         } else {
-          appendWhyMLLastString(v+" ");
+          appendWhyMLLastString(v + " ");
         }
       }
+      //------- <GEOFFREY ajout type string > -------//
+    } else if (constantStatement.getValue() instanceof String) {
+      String v = ((String) constantStatement.getValue()).toString();
+      appendWhyMLLastString("" + toSeqInt(v) + "");
+    } else if (constantStatement.getValue() == null && constantStatement.getParentNode().get() instanceof ReturnStatement){
+      appendWhyMLLastString("null");
     } else {
       appendWhyMLLastString(constantStatement.getValue()+"");
     }
@@ -526,7 +641,6 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
     //TODO : Moving constants out of the method
     List<OperatorType> supportedOperators = new ArrayList<>();
     supportedOperators.addAll(Arrays.asList(OperatorType.AND,
-      OperatorType.PLUS,
       OperatorType.MINUS,
       OperatorType.TIMES,
       OperatorType.DIVIDE,
@@ -537,24 +651,41 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
       OperatorType.MOREOREQUALS));
     if (supportedOperators.contains(binaryOperation.getType())) {
       appendWhyMLLastString("( ( " + binaryOperation.getType() + " ) ");
+      binaryOperation.walk(this);
+      appendWhyMLLastString(" ) ");
+      // -----< GEOFFREY Ajout condition pour concatenation de string > -----//
+      // hypothese :fils ne sont que constantes, : , +
+    } else if (binaryOperation.getType() == OperatorType.PLUS) {
+      ExpressionStatement leftExpression = binaryOperation.getLeftExpression();
+      ExpressionStatement rightExpression = binaryOperation.getRightExpression();
+      if((leftExpression instanceof ConstantStatement || leftExpression instanceof BinaryOperation) && (rightExpression instanceof ConstantStatement || rightExpression instanceof BinaryOperation)) {
+          appendWhyMLLastString("( ( ++ ) ");
+          binaryOperation.walk(this);
+          appendWhyMLLastString(" ) ");
+      }
+      else {
+        appendWhyMLLastString("( ( + ) ");
+        binaryOperation.walk(this);
+        appendWhyMLLastString(" ) ");
+      }
     } else if (binaryOperation.getType() == OperatorType.EQUALS) {
       appendWhyMLLastString("( ( = ) ");
+      binaryOperation.walk(this);
+      appendWhyMLLastString(" ) ");
     } else if (binaryOperation.getType() == OperatorType.NOTEQUALS) {
       appendWhyMLLastString("( ( <> ) ");
+      binaryOperation.walk(this);
+      appendWhyMLLastString(" ) ");
+      //================= <GEOFFREY ajout : > =================
+    } else if (binaryOperation.getType() == OperatorType.METHOD_CALL) {
+      binaryOperation.walk(this);
     } else {
       System.out.println("Operator not supported: "+binaryOperation.getType());
       appendWhyMLLastString("Operator not supported: "+binaryOperation.getType());
+      binaryOperation.walk(this);
+      appendWhyMLLastString(" ) ");
     }
-    binaryOperation.walk(this);
-    appendWhyMLLastString(" ) ");
   }
-
-
-
-
-
-
-
 
 
 
@@ -571,9 +702,6 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
     unaryOperation.getExpressionStatement().accept(this);
     decr();
   }
-
-
-
 
   @Override
   public void visitCaseStatement(CaseStatement caseStatement) {
@@ -649,12 +777,51 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
     decr();
   }
 
+  // --------- <GEOFFREY > ------- //
   @Override
   public void visitMethodInvocation(MethodInvocation methodInvocation) {
-    System.out.println("Method invocation unsupported");
-    whyMLcode.add(space() + "Method invocation: "+methodInvocation.getName()+", null safe? -> "+methodInvocation.isNullSafeGuarded());
     incr();
-    methodInvocation.walk(this);
+
+    //pour les appels d'attributs
+    if(methodInvocation.getArity() == 0) {
+      BinaryOperation goloElement = (BinaryOperation) methodInvocation.getParentNode().get();
+      String objectName = ((ReferenceLookup)goloElement.getLeftExpression()).getName(); //on récupère le nom de l'objet
+      String attribut = methodInvocation.getName(); //on récupère le nom de l'attribut
+      //TODO ensures avec vérification existence dans la Hashtable attributs ou methodes
+      //TODO if Hashtbl.find dans attributs : not Found
+      //TODO         if Hashtbl.find dans methodes : not Found
+      //TODO              ERROR
+      //TODO         else methodes
+      //TODO else attributs
+
+      //pour les attributs
+      appendWhyMLLastString("(Hashtbl.find " + objectName + ".attributs " + toSeqInt(attribut) + ") ");
+      //pour les methodes
+      //appendWhyMLLastString(nomClosureReference +";");
+
+      //pour les définitions de méthodes
+    } else if (methodInvocation.getName().equals("define")) {
+      whyMLcode.add(space() + "let method : string = ");
+      methodInvocation.walk(this);
+      appendWhyMLLastString("in ");
+      // on récupère le nom de la variable assignée
+      BinaryOperation binaryOperation = (BinaryOperation)methodInvocation.getParentNode().get();
+      ReferenceLookup object = (ReferenceLookup)binaryOperation.getLeftExpression();
+      whyMLcode.add(space() + "Hashtbl.add " + object.getName() + ".methods method;");
+      whyMLcode.add(space() + "");
+
+      //pour les définitions d'attributs
+    } else {
+      whyMLcode.add(space() + "let attribut : string = " + toSeqInt(methodInvocation.getName()) + " in ");
+      whyMLcode.add(space() + "let value : string = ");
+      methodInvocation.walk(this);
+      appendWhyMLLastString("in ");
+      // on récupère le nom de la variable assignée
+      BinaryOperation binaryOperation = (BinaryOperation)methodInvocation.getParentNode().get();
+      ReferenceLookup object = (ReferenceLookup)binaryOperation.getLeftExpression();
+      whyMLcode.add(space() + "Hashtbl.add " + object.getName() + ".attributs attribut value;");
+      whyMLcode.add(space() + "");
+    }
     decr();
   }
 
@@ -701,8 +868,9 @@ public class IrTreeVisitAndGenerate implements GoloIrVisitor {
     } else {
       // ReferenceTable table = context.referenceTableStack.peek();
       System.out.println("Closure reference unsupported");
-      appendWhyMLLastString("Closure reference: " + target.getName() + ", regular arguments at index " +target.getSyntheticParameterCount());
-      whyMLcode.add("");
+      //appendWhyMLLastString("Closure reference: " + target.getName() + ", regular arguments at index " +target.getSyntheticParameterCount());
+      //appendWhyMLLastString(target.getName() + "");
+      //whyMLcode.add("");
         incr();
       for (String refName : closureReference.getCapturedReferenceNames()) {
         appendWhyMLLastString(space() + "- capture: " + refName);
